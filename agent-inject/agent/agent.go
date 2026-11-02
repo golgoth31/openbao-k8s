@@ -659,7 +659,11 @@ func (a *Agent) Patch(additionalPatches ...jsonpatch.Operation) ([]byte, error) 
 
 	// Init Container
 	if a.PrePopulate {
-		container, err := a.ContainerInitSidecar()
+		initSidecar := a.ContainerInitSidecar
+		if a.NativeSidecar {
+			initSidecar = a.ContainerSidecar
+		}
+		container, err := initSidecar()
 		if err != nil {
 			return nil, err
 		}
@@ -693,7 +697,7 @@ func (a *Agent) Patch(additionalPatches ...jsonpatch.Operation) ([]byte, error) 
 
 		// Add Volume Mounts
 		for i, container := range containers {
-			if container.Name == "openbao-agent-init" {
+			if container.Name == "openbao-agent-init" || (a.NativeSidecar && container.Name == "openbao-agent") {
 				continue
 			}
 			patches = append(patches, addVolumeMounts(
@@ -709,7 +713,7 @@ func (a *Agent) Patch(additionalPatches ...jsonpatch.Operation) ([]byte, error) 
 	}
 
 	// Sidecar Container
-	if !a.PrePopulateOnly {
+	if !a.PrePopulateOnly && !a.NativeSidecar {
 		container, err := a.ContainerSidecar()
 		if err != nil {
 			return nil, err
