@@ -1,0 +1,318 @@
+[
+  {
+    "op": "add",
+    "path": "/spec/volumes/-",
+    "value": {
+      "emptyDir": {
+        "medium": "Memory"
+      },
+      "name": "home-init"
+    }
+  },
+  {
+    "op": "add",
+    "path": "/spec/volumes/-",
+    "value": {
+      "emptyDir": {
+        "medium": "Memory"
+      },
+      "name": "home-sidecar"
+    }
+  },
+  {
+    "op": "add",
+    "path": "/spec/volumes/-",
+    "value": {
+      "emptyDir": {
+        "medium": "Memory"
+      },
+      "name": "openbao-secrets"
+    }
+  },
+  {
+    "op": "add",
+    "path": "/spec/containers/0/volumeMounts/-",
+    "value": {
+      "mountPath": "/vault/secrets",
+      "name": "openbao-secrets"
+    }
+  },
+  {
+    "op": "add",
+    "path": "/spec/containers/1/volumeMounts",
+    "value": [
+      {
+        "mountPath": "/vault/secrets",
+        "name": "openbao-secrets"
+      }
+    ]
+  },
+  {
+    "op": "add",
+    "path": "/spec/initContainers",
+    "value": [
+      {
+        "args": [
+          "echo ${BAO_CONFIG?} | base64 -d > /home/openbao/config.json && bao agent -config=/home/openbao/config.json"
+        ],
+        "command": [
+          "/bin/sh",
+          "-ec"
+        ],
+        "env": [
+          {
+            "name": "NAMESPACE",
+            "valueFrom": {
+              "fieldRef": {
+                "fieldPath": "metadata.namespace"
+              }
+            }
+          },
+          {
+            "name": "HOST_IP",
+            "valueFrom": {
+              "fieldRef": {
+                "fieldPath": "status.hostIP"
+              }
+            }
+          },
+          {
+            "name": "POD_IP",
+            "valueFrom": {
+              "fieldRef": {
+                "fieldPath": "status.podIP"
+              }
+            }
+          },
+          {
+            "name": "BAO_LOG_LEVEL",
+            "value": "info"
+          },
+          {
+            "name": "BAO_LOG_FORMAT",
+            "value": "standard"
+          },
+          {
+            "name": "HTTPS_PROXY",
+            "value": "http://proxy:3128"
+          },
+          {
+            "name": "BAO_CONFIG",
+            "value": {
+              "auto_auth": {
+                "method": {
+                  "config": {
+                    "role": "app",
+                    "token_path": "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                  },
+                  "mount_path": "test",
+                  "type": "kubernetes"
+                },
+                "sink": [
+                  {
+                    "config": {
+                      "path": "/home/openbao/.openbao-token"
+                    },
+                    "type": "file"
+                  }
+                ]
+              },
+              "exit_after_auth": true,
+              "pid_file": "/home/openbao/.pid",
+              "template": [
+                {
+                  "contents": "{{ with secret \"secret/data/db\" }}{{ range $k, $v := .Data }}{{ $k }}: {{ $v }}\n{{ end }}{{ end }}",
+                  "destination": "/vault/secrets/db",
+                  "left_delimiter": "{{",
+                  "right_delimiter": "}}"
+                }
+              ],
+              "template_config": {
+                "exit_on_retry_failure": true
+              },
+              "vault": {
+                "address": "http://foobar:8200"
+              }
+            }
+          }
+        ],
+        "image": "foobar-image",
+        "name": "openbao-agent-init",
+        "resources": {
+          "limits": {
+            "cpu": "500m",
+            "memory": "128Mi"
+          },
+          "requests": {
+            "cpu": "250m",
+            "memory": "64Mi"
+          }
+        },
+        "securityContext": {
+          "allowPrivilegeEscalation": false,
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "readOnlyRootFilesystem": true,
+          "runAsGroup": 1000,
+          "runAsNonRoot": true,
+          "runAsUser": 100
+        },
+        "volumeMounts": [
+          {
+            "mountPath": "/home/openbao",
+            "name": "home-init"
+          },
+          {
+            "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+            "name": "kube-api-access",
+            "readOnly": true
+          },
+          {
+            "mountPath": "/vault/secrets",
+            "name": "openbao-secrets"
+          }
+        ],
+        "workingDir": "/tmp/init"
+      }
+    ]
+  },
+  {
+    "op": "add",
+    "path": "/spec/containers/-",
+    "value": {
+      "args": [
+        "echo ${BAO_CONFIG?} | base64 -d > /home/openbao/config.json && bao agent -config=/home/openbao/config.json"
+      ],
+      "command": [
+        "/bin/sh",
+        "-ec"
+      ],
+      "env": [
+        {
+          "name": "NAMESPACE",
+          "valueFrom": {
+            "fieldRef": {
+              "fieldPath": "metadata.namespace"
+            }
+          }
+        },
+        {
+          "name": "HOST_IP",
+          "valueFrom": {
+            "fieldRef": {
+              "fieldPath": "status.hostIP"
+            }
+          }
+        },
+        {
+          "name": "POD_IP",
+          "valueFrom": {
+            "fieldRef": {
+              "fieldPath": "status.podIP"
+            }
+          }
+        },
+        {
+          "name": "BAO_LOG_LEVEL",
+          "value": "info"
+        },
+        {
+          "name": "BAO_LOG_FORMAT",
+          "value": "standard"
+        },
+        {
+          "name": "HTTPS_PROXY",
+          "value": "http://proxy:3128"
+        },
+        {
+          "name": "BAO_CONFIG",
+          "value": {
+            "auto_auth": {
+              "method": {
+                "config": {
+                  "role": "app",
+                  "token_path": "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                },
+                "mount_path": "test",
+                "type": "kubernetes"
+              },
+              "sink": [
+                {
+                  "config": {
+                    "path": "/home/openbao/.openbao-token"
+                  },
+                  "type": "file"
+                }
+              ]
+            },
+            "exit_after_auth": false,
+            "pid_file": "/home/openbao/.pid",
+            "template": [
+              {
+                "contents": "{{ with secret \"secret/data/db\" }}{{ range $k, $v := .Data }}{{ $k }}: {{ $v }}\n{{ end }}{{ end }}",
+                "destination": "/vault/secrets/db",
+                "left_delimiter": "{{",
+                "right_delimiter": "}}"
+              }
+            ],
+            "template_config": {
+              "exit_on_retry_failure": true
+            },
+            "vault": {
+              "address": "http://foobar:8200"
+            }
+          }
+        }
+      ],
+      "image": "foobar-image",
+      "lifecycle": {},
+      "name": "openbao-agent",
+      "resources": {
+        "limits": {
+          "cpu": "500m",
+          "memory": "128Mi"
+        },
+        "requests": {
+          "cpu": "250m",
+          "memory": "64Mi"
+        }
+      },
+      "securityContext": {
+        "allowPrivilegeEscalation": false,
+        "capabilities": {
+          "drop": [
+            "ALL"
+          ]
+        },
+        "readOnlyRootFilesystem": true,
+        "runAsGroup": 1000,
+        "runAsNonRoot": true,
+        "runAsUser": 100
+      },
+      "volumeMounts": [
+        {
+          "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+          "name": "kube-api-access",
+          "readOnly": true
+        },
+        {
+          "mountPath": "/home/openbao",
+          "name": "home-sidecar"
+        },
+        {
+          "mountPath": "/vault/secrets",
+          "name": "openbao-secrets"
+        }
+      ],
+      "workingDir": "/tmp/sidecar"
+    }
+  },
+  {
+    "op": "add",
+    "path": "/metadata/annotations/openbao.org~1agent-inject-status",
+    "value": "injected"
+  }
+]
