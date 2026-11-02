@@ -8,7 +8,7 @@ Features:
 * Add annotations for customizing template delimiters [GH-96](https://github.com/openbao/openbao-k8s/pull/96)
 * Added "tls_ca_cert_file" to envvar configuration [GH-97](https://github.com/openbao/openbao-k8s/pull/97)
 * Add `openbao.org/agent-native-sidecar` annotation: inject a single `openbao-agent` Kubernetes native sidecar (init container with `restartPolicy: Always`) instead of `openbao-agent-init` plus `openbao-agent`. A startup probe holds the following containers until every rendered secret file (and the token file with `agent-inject-token`) exists.
-  * Requires native sidecar support on the API server and the nodes (Kubernetes 1.29+). An API server without it rejects the pod at creation; nodes running an older kubelet are untested.
+  * Requires native sidecar support on the API server and the nodes (Kubernetes 1.29+). An API server without it rejects the pod at creation; nodes running an older kubelet are untested. Tested end to end on Kubernetes 1.34 (kind).
   * Rejected together with `agent-pre-populate: "false"`, `agent-pre-populate-only`, `agent-configmap`, `agent-init-json-patch`, `agent-inject-command-*` and `agent-enable-quit`.
   * Only `/startupProbe/failureThreshold` (default 300) and `/startupProbe/periodSeconds` (default 1) are supported `agent-json-patch` overrides; removing or rewriting the probe disables the wait, and removing or changing `restartPolicy` is rejected.
   * With no secret and no token there is no probe, so the application may start before the agent has authenticated.
