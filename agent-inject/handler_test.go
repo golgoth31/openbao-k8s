@@ -578,3 +578,41 @@ func encodeRaw(t *testing.T, input interface{}) runtime.RawExtension {
 	require.NoError(t, err)
 	return runtime.RawExtension{Raw: data}
 }
+
+func TestHandlerMutate_NativeSidecar(t *testing.T) {
+	spec := corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "web", VolumeMounts: []corev1.VolumeMount{{Name: "foobar", MountPath: "serviceaccount/somewhere"}}}},
+	}
+
+	cases := map[string]map[string]string{
+		"AC21_openbao_prefix": {
+			agent.AnnotationAgentInject:               "true",
+			agent.AnnotationOpenbaoRole:               "demo",
+			agent.AnnotationAgentInjectSecret + "-db": "secret/data/db",
+			agent.AnnotationAgentNativeSidecar:        "true",
+		},
+		"AC21_vault_prefix_rewrite": {
+			"vault.hashicorp.com/agent-inject":           "true",
+			"vault.hashicorp.com/role":                   "demo",
+			"vault.hashicorp.com/agent-inject-secret-db": "secret/data/db",
+			"vault.hashicorp.com/agent-native-sidecar":   "true",
+		},
+	}
+
+	for name, annotations := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := basicHandler()
+			res := h.Mutate(&admissionv1.AdmissionRequest{
+				Namespace: "test",
+				Object: encodeRaw(t, &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{Annotations: annotations},
+					Spec:       spec,
+				}),
+			})
+			require.True(t, res.Resp.Allowed, "admission denied: %v", res.Resp.Result)
+			require.True(t, res.InjectedNativeSidecar)
+			require.False(t, res.InjectedInit)
+			require.False(t, res.InjectedSidecar)
+		})
+	}
+}

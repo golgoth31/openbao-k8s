@@ -6,12 +6,15 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"path"
+	"sort"
 	"strings"
 
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/openbao/openbao/sdk/v2/helper/pointerutil"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -24,7 +27,29 @@ const (
 	DefaultRevokeGrace        = 5
 	DefaultAgentLogLevel      = "info"
 	DefaultAgentLogFormat     = "standard"
+
+	DefaultNativeSidecarProbePeriodSeconds    int32 = 1
+	DefaultNativeSidecarProbeFailureThreshold int32 = 300
 )
+
+func (a *Agent) startupProbe() *corev1.Probe {
+	paths := []string{TokenFile}
+	for _, t := range a.newTemplateConfigs() {
+		paths = append(paths, t.Destination)
+	}
+	if a.InjectToken {
+		paths = append(paths, path.Join(a.Annotations[AnnotationOpenbaoSecretVolumePath], "token"))
+	}
+	sort.Strings(paths)
+	command := append([]string{"/bin/sh", "-c", "for f in \"$@\"; do test -f \"$f\" || { printf 'startup-probe: missing %s\\n' \"$f\" >&2; exit 1; }; done", "startup-probe"}, paths...)
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{Command: command},
+		},
+		PeriodSeconds:    DefaultNativeSidecarProbePeriodSeconds,
+		FailureThreshold: DefaultNativeSidecarProbeFailureThreshold,
+	}
+}
 
 // ContainerSidecar creates a new container to be added
 // to the pod being mutated.
@@ -111,6 +136,11 @@ func (a *Agent) ContainerSidecar() (corev1.Container, error) {
 		newContainer.SecurityContext = a.securityContext()
 	}
 
+	if a.NativeSidecar {
+		newContainer.RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
+		newContainer.StartupProbe = a.startupProbe()
+	}
+
 	// apply any JSON patch requested
 	if a.JsonPatch == "" {
 		return newContainer, nil
@@ -132,6 +162,9 @@ func (a *Agent) ContainerSidecar() (corev1.Container, error) {
 	err = json.Unmarshal(newContainerJson, &newContainer)
 	if err != nil {
 		return newContainer, err
+	}
+	if a.NativeSidecar && (newContainer.RestartPolicy == nil || *newContainer.RestartPolicy != corev1.ContainerRestartPolicyAlways) {
+		return newContainer, fmt.Errorf("agent-json-patch must not remove or change restartPolicy of a native sidecar")
 	}
 	return newContainer, nil
 }

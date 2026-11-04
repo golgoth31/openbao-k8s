@@ -1479,3 +1479,39 @@ func TestParseTelemetryAnnotations(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeSidecarAnnotation(t *testing.T) {
+	require.Equal(t, "openbao.org/agent-native-sidecar", AnnotationAgentNativeSidecar)
+
+	tests := map[string]struct {
+		value     *string
+		expected  bool
+		expectErr bool
+	}{
+		"absent defaults to false":  {value: nil, expected: false},
+		"true":                      {value: pointerutil.StringPtr("true"), expected: true},
+		"false":                     {value: pointerutil.StringPtr("false"), expected: false},
+		"AC4 invalid bool is error": {value: pointerutil.StringPtr("maybe"), expectErr: true},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			annotations := map[string]string{
+				"openbao.org/agent-inject-secret-db": "secret/db",
+			}
+			if tc.value != nil {
+				annotations["openbao.org/agent-native-sidecar"] = *tc.value
+			}
+			pod := testPod(annotations)
+			require.NoError(t, Init(pod, basicAgentConfig()))
+
+			agent, err := New(pod)
+			if tc.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.expected, agent.NativeSidecar)
+		})
+	}
+}

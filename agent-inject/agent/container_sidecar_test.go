@@ -4,8 +4,13 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -1478,4 +1483,244 @@ func TestAgentJsonPatch(t *testing.T) {
 
 func optional[T any](x T) *T {
 	return &x
+}
+
+const nativeProbeScript = "for f in \"$@\"; do test -f \"$f\" || { printf 'startup-probe: missing %s\\n' \"$f\" >&2; exit 1; }; done"
+
+func nativeProbeCommand(paths ...string) []string {
+	return append([]string{"/bin/sh", "-c", nativeProbeScript, "startup-probe"}, paths...)
+}
+
+func nativeSidecarAnnotations(extra map[string]string) map[string]string {
+	annotations := map[string]string{
+		AnnotationOpenbaoRole:        "foobar",
+		AnnotationAgentNativeSidecar: "true",
+	}
+	for k, v := range extra {
+		annotations[k] = v
+	}
+	return annotations
+}
+
+func buildSidecar(t *testing.T, annotations map[string]string) (corev1.Container, error) {
+	t.Helper()
+	pod := testPod(annotations)
+	require.NoError(t, Init(pod, basicAgentConfig()))
+	agent, err := New(pod)
+	require.NoError(t, err)
+	require.NoError(t, agent.Validate())
+	return agent.ContainerSidecar()
+}
+
+func requireNativeShape(t *testing.T, container corev1.Container) {
+	t.Helper()
+	require.NotNil(t, container.RestartPolicy, "native sidecar must set restartPolicy")
+	require.Equal(t, corev1.ContainerRestartPolicyAlways, *container.RestartPolicy)
+}
+
+func requireProbeCommand(t *testing.T, container corev1.Container, paths ...string) {
+	t.Helper()
+	require.NotNil(t, container.StartupProbe, "native sidecar must carry a startupProbe")
+	require.NotNil(t, container.StartupProbe.Exec)
+	require.Equal(t, nativeProbeCommand(paths...), container.StartupProbe.Exec.Command)
+}
+
+func decodedBaoConfig(t *testing.T, container corev1.Container) map[string]any {
+	t.Helper()
+	for _, env := range container.Env {
+		if env.Name != "BAO_CONFIG" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(env.Value)
+		require.NoError(t, err)
+		var cfg map[string]any
+		require.NoError(t, json.Unmarshal(raw, &cfg))
+		return cfg
+	}
+	t.Fatal("BAO_CONFIG env var not found")
+	return nil
+}
+
+func TestContainerSidecarNative(t *testing.T) {
+	secretDB := AnnotationAgentInjectSecret + "-db"
+
+	t.Run("AC3_one_secret", func(t *testing.T) {
+		container, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+			secretDB: "secret/data/db",
+		}))
+		require.NoError(t, err)
+		require.Equal(t, "openbao-agent", container.Name)
+		requireNativeShape(t, container)
+		requireProbeCommand(t, container, "/home/openbao/.openbao-token", "/vault/secrets/db")
+		assert.Equal(t, int32(1), container.StartupProbe.PeriodSeconds)
+		assert.Equal(t, int32(300), container.StartupProbe.FailureThreshold)
+		cfg := decodedBaoConfig(t, container)
+		require.Contains(t, cfg, "exit_after_auth")
+		assert.Equal(t, false, cfg["exit_after_auth"])
+	})
+
+	t.Run("AC13_token_and_secret", func(t *testing.T) {
+		container, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+			secretDB:                   "secret/data/db",
+			AnnotationAgentInjectToken: "true",
+		}))
+		require.NoError(t, err)
+		requireNativeShape(t, container)
+		requireProbeCommand(t, container, "/home/openbao/.openbao-token", "/vault/secrets/db", "/vault/secrets/token")
+	})
+
+	t.Run("AC14_custom_volume_path_and_file", func(t *testing.T) {
+		container, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+			secretDB: "secret/data/db",
+			AnnotationOpenbaoSecretVolumePath + "-db": "/etc/creds",
+			AnnotationAgentInjectFile + "-db":         "app/db.json",
+		}))
+		require.NoError(t, err)
+		requireNativeShape(t, container)
+		requireProbeCommand(t, container, "/etc/creds/app/db.json", "/home/openbao/.openbao-token")
+	})
+
+	t.Run("ReviewFocus1_shell_metacharacters_are_literal_args", func(t *testing.T) {
+		container, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+			secretDB:                          "secret/data/db",
+			AnnotationAgentInjectFile + "-db": "a b;$(id)",
+		}))
+		require.NoError(t, err)
+		requireNativeShape(t, container)
+		requireProbeCommand(t, container, "/home/openbao/.openbao-token", "/vault/secrets/a b;$(id)")
+	})
+
+	t.Run("ReviewFocus2_probe_args_sorted_across_fresh_agents", func(t *testing.T) {
+		for i := 0; i < 20; i++ {
+			container, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+				AnnotationAgentInjectSecret + "-zz": "secret/data/zz",
+				AnnotationAgentInjectSecret + "-aa": "secret/data/aa",
+				AnnotationAgentInjectSecret + "-mm": "secret/data/mm",
+			}))
+			require.NoError(t, err, "iteration %d", i)
+			requireProbeCommand(t, container, "/home/openbao/.openbao-token", "/vault/secrets/aa", "/vault/secrets/mm", "/vault/secrets/zz")
+		}
+	})
+
+	t.Run("AC12_no_secret_no_token_waits_for_auth_token", func(t *testing.T) {
+		container, err := buildSidecar(t, nativeSidecarAnnotations(nil))
+		require.NoError(t, err)
+		requireNativeShape(t, container)
+		requireProbeCommand(t, container, "/home/openbao/.openbao-token")
+	})
+
+	t.Run("AC16_revoke_on_shutdown_kept", func(t *testing.T) {
+		native, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+			secretDB:                        "secret/data/db",
+			AnnotationAgentRevokeOnShutdown: "true",
+		}))
+		require.NoError(t, err)
+		classic, err := buildSidecar(t, map[string]string{
+			AnnotationOpenbaoRole:           "foobar",
+			secretDB:                        "secret/data/db",
+			AnnotationAgentRevokeOnShutdown: "true",
+		})
+		require.NoError(t, err)
+		requireNativeShape(t, native)
+		require.NotNil(t, classic.Lifecycle)
+		require.NotNil(t, classic.Lifecycle.PreStop)
+		require.NotNil(t, native.Lifecycle)
+		require.NotNil(t, native.Lifecycle.PreStop)
+		require.NotNil(t, native.Lifecycle.PreStop.Exec)
+		assert.Equal(t, classic.Lifecycle.PreStop.Exec.Command, native.Lifecycle.PreStop.Exec.Command)
+	})
+
+	t.Run("AC11_json_patch_failureThreshold", func(t *testing.T) {
+		container, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+			secretDB:                 "secret/data/db",
+			AnnotationAgentJsonPatch: `[{"op":"replace","path":"/startupProbe/failureThreshold","value":60}]`,
+		}))
+		require.NoError(t, err)
+		requireNativeShape(t, container)
+		requireProbeCommand(t, container, "/home/openbao/.openbao-token", "/vault/secrets/db")
+		assert.Equal(t, int32(60), container.StartupProbe.FailureThreshold)
+		assert.Equal(t, int32(1), container.StartupProbe.PeriodSeconds)
+	})
+
+	t.Run("AC11_json_patch_periodSeconds", func(t *testing.T) {
+		container, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+			secretDB:                 "secret/data/db",
+			AnnotationAgentJsonPatch: `[{"op":"replace","path":"/startupProbe/periodSeconds","value":5}]`,
+		}))
+		require.NoError(t, err)
+		requireNativeShape(t, container)
+		requireProbeCommand(t, container, "/home/openbao/.openbao-token", "/vault/secrets/db")
+		assert.Equal(t, int32(5), container.StartupProbe.PeriodSeconds)
+		assert.Equal(t, int32(300), container.StartupProbe.FailureThreshold)
+	})
+
+	t.Run("guard_AC11b_json_patch_removes_restartPolicy", func(t *testing.T) {
+		_, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+			secretDB:                 "secret/data/db",
+			AnnotationAgentJsonPatch: `[{"op":"remove","path":"/restartPolicy"}]`,
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "restartPolicy")
+	})
+
+	t.Run("AC11b_json_patch_sets_restartPolicy_not_Always", func(t *testing.T) {
+		_, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+			secretDB:                 "secret/data/db",
+			AnnotationAgentJsonPatch: `[{"op":"add","path":"/restartPolicy","value":"Never"}]`,
+		}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "restartPolicy")
+	})
+
+	t.Run("guard_native_off_has_no_restartPolicy_nor_probe", func(t *testing.T) {
+		container, err := buildSidecar(t, map[string]string{
+			AnnotationOpenbaoRole: "foobar",
+			secretDB:              "secret/data/db",
+		})
+		require.NoError(t, err)
+		assert.Nil(t, container.RestartPolicy)
+		assert.Nil(t, container.StartupProbe)
+	})
+}
+
+func TestNativeSidecarProbeScript(t *testing.T) {
+	container, err := buildSidecar(t, nativeSidecarAnnotations(map[string]string{
+		AnnotationAgentInjectSecret + "-db": "secret/data/db",
+	}))
+	require.NoError(t, err)
+	require.NotNil(t, container.StartupProbe)
+	script := container.StartupProbe.Exec.Command[:4]
+
+	dir := t.TempDir()
+	present := filepath.Join(dir, "a b;$(touch pwned)")
+	require.NoError(t, os.WriteFile(present, []byte("x"), 0o600))
+	missing := filepath.Join(dir, "missing")
+
+	run := func(paths ...string) (int, string) {
+		cmd := exec.Command(script[0], append(script[1:], paths...)...)
+		cmd.Dir = dir
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		if err == nil {
+			return 0, stderr.String()
+		}
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr)
+		return exitErr.ExitCode(), stderr.String()
+	}
+
+	code, stderr := run(present)
+	assert.Equal(t, 0, code)
+	assert.Empty(t, stderr)
+	assert.NoFileExists(t, filepath.Join(dir, "pwned"))
+
+	code, stderr = run(present, missing)
+	assert.Equal(t, 1, code)
+	assert.Equal(t, "startup-probe: missing "+missing+"\n", stderr)
+
+	backslash := filepath.Join(dir, `a\cb\n`)
+	code, stderr = run(backslash)
+	assert.Equal(t, 1, code)
+	assert.Equal(t, "startup-probe: missing "+backslash+"\n", stderr)
 }

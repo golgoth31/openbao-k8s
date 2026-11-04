@@ -118,6 +118,10 @@ const (
 	// to run when a pod starts. Default is last.
 	AnnotationAgentInitFirst = "openbao.org/agent-init-first"
 
+	// AnnotationAgentNativeSidecar injects one native sidecar instead of an init container plus a sidecar.
+	// Needs native sidecars (Kubernetes >= 1.29) on API server and nodes, else the pod is rejected.
+	AnnotationAgentNativeSidecar = "openbao.org/agent-native-sidecar"
+
 	// AnnotationAgentPrePopulate controls whether an init container is included
 	// to pre-populate the shared memory volume with secrets prior to the application
 	// starting.
@@ -346,7 +350,7 @@ type AgentConfig struct {
 	Address                    string
 	AuthType                   string
 	AuthPath                   string
-	OpenbaoNamespace             string
+	OpenbaoNamespace           string
 	Namespace                  string
 	RevokeOnShutdown           bool
 	UserID                     string
@@ -718,6 +722,15 @@ func (a *Agent) initFirst() (bool, error) {
 	return parseutil.ParseBool(raw)
 }
 
+func (a *Agent) nativeSidecar() (bool, error) {
+	raw, ok := a.Annotations[AnnotationAgentNativeSidecar]
+	if !ok {
+		return false, nil
+	}
+
+	return parseutil.ParseBool(raw)
+}
+
 func (a *Agent) prePopulate() (bool, error) {
 	raw, ok := a.Annotations[AnnotationAgentPrePopulate]
 	if !ok {
@@ -883,7 +896,7 @@ func (a *Agent) getEnableQuit() (bool, error) {
 }
 
 func (a *Agent) cachePersist(cacheEnabled bool) bool {
-	if cacheEnabled && a.PrePopulate && !a.PrePopulateOnly {
+	if cacheEnabled && a.PrePopulate && !a.PrePopulateOnly && !a.NativeSidecar {
 		return true
 	}
 	return false

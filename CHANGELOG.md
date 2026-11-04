@@ -7,6 +7,14 @@ Features:
 * Add agent injector telemetry [GH-96](https://github.com/openbao/openbao-k8s/pull/96)
 * Add annotations for customizing template delimiters [GH-96](https://github.com/openbao/openbao-k8s/pull/96)
 * Added "tls_ca_cert_file" to envvar configuration [GH-97](https://github.com/openbao/openbao-k8s/pull/97)
+* Add `openbao.org/agent-native-sidecar` annotation: inject a single `openbao-agent` Kubernetes native sidecar (init container with `restartPolicy: Always`) instead of `openbao-agent-init` plus `openbao-agent`. A startup probe holds the following containers until the agent's auto-auth token sink (`/home/openbao/.openbao-token`) and every rendered secret file (and the token file with `agent-inject-token`) exist; a failed probe names the missing file.
+  * Requires native sidecar support on the API server and the nodes (Kubernetes 1.29+). An API server without it rejects the pod at creation; nodes running an older kubelet are untested. Tested end to end on Kubernetes 1.34 (kind).
+  * Rejected together with `agent-pre-populate: "false"`, `agent-pre-populate-only`, `agent-configmap`, `agent-init-json-patch`, `agent-inject-command-*` and `agent-enable-quit`.
+  * Only `/startupProbe/failureThreshold` (default 300) and `/startupProbe/periodSeconds` (default 1) are supported `agent-json-patch` overrides; removing or rewriting the probe disables the wait, and removing or changing `restartPolicy` is rejected.
+  * `agent-revoke-on-shutdown` is best-effort: the revoke still runs when the pod starts terminating, but the agent keeps running until the application exits and may re-authenticate in that window.
+  * Jobs: the agent no longer blocks completion, but sidecars ignore the pod `restartPolicy`, so with `restartPolicy: Never` an agent failure leaves the pod in Init instead of failing it; set `activeDeadlineSeconds`. The agent's resource requests apply for the whole run.
+  * Injections are counted with `injection_type="native_sidecar"`.
+  * Upstream VPA does not size native sidecars yet.
 
 Changes:
 * Refactor environment variables and flags [GH-12](https://github.com/openbao/openbao-k8s/pull/12)
