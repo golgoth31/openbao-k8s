@@ -747,7 +747,7 @@ func TestPatchNativeSidecar(t *testing.T) {
 
 		agentContainer := findContainer(t, pod.Spec.InitContainers, "openbao-agent")
 		requireNativeShape(t, agentContainer)
-		requireProbeCommand(t, agentContainer, "/vault/secrets/db")
+		requireProbeCommand(t, agentContainer, "/home/openbao/.openbao-token", "/vault/secrets/db")
 		require.Equal(t, false, decodedBaoConfig(t, agentContainer)["exit_after_auth"])
 		require.True(t, hasSecretMount(agentContainer), "native agent must mount the secret volume it renders into")
 		requireUniqueMountPaths(t, agentContainer)
